@@ -94,6 +94,35 @@ vim.keymap.set('n', '<leader>fd', function()
   })
 end, { desc = "Find Directory and open in Oil" })
 
+-- import { pipe } from fp-ts/functionを追加
+-- fp-ts/functionが候補に出ない問題の解決
+vim.keymap.set('n', '<leader>if', function()
+  -- TypeScript/TSXファイル以外では実行しない
+  local filetype = vim.bo.filetype
+  if filetype ~= "typescript" and filetype ~= "typescriptreact" then
+    print("This command is only for TypeScript files")
+    return
+  end
+  
+  -- ファイル全体を検索して、既にfp-ts/functionのインポートがあるか確認
+  local has_import = vim.fn.search('from [\'"]fp-ts/function[\'"]', "nw") > 0
+  
+  if has_import then
+    print("fp-ts/function import already exists")
+    return
+  end
+  
+  -- 最後のimport文の位置を探す
+  local line = vim.fn.search("^import", "bnW")
+  if line == 0 then
+    line = 0  -- import文がなければファイルの先頭
+  end
+  
+  -- インポート文を追加
+  vim.fn.append(line, "import {  } from 'fp-ts/function'")
+  print("Added fp-ts/function import")
+end, { desc = "Add fp-ts/function import" })
+
 -- ==================== 自動コマンド設定 ====================
 -- Quickfixウィンドウで項目選択したら自動で閉じる
 vim.api.nvim_create_autocmd("FileType", {
@@ -103,23 +132,55 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 
--- 保存時にorganize imports → ESLint → Prettierの順で実行
-vim.api.nvim_create_autocmd("BufWritePre", {
-  pattern = { "*.ts", "*.tsx", "*.js", "*.jsx" },
-  callback = function(args)
-    -- organize importsを同期的に実行
-    local params = vim.lsp.util.make_range_params()
-    params.context = { only = { "source.organizeImports" } }
-    local result = vim.lsp.buf_request_sync(0, "textDocument/codeAction", params, 1000)
-    for _, res in pairs(result or {}) do
-      for _, action in pairs(res.result or {}) do
-        if action.edit then
-          vim.lsp.util.apply_workspace_edit(action.edit, "utf-8")
-        end
-      end
-    end
-  end,
-})
+-- -- 保存時にorganize imports → ESLint → Prettierの順で実行
+-- vim.api.nvim_create_autocmd("BufWritePre", {
+--   pattern = { "*.ts", "*.tsx", "*.js", "*.jsx" },
+--   callback = function(args)
+--     -- organize importsを同期的に実行
+--     local params = vim.lsp.util.make_range_params()
+--     params.context = { only = { "source.organizeImports" } }
+--     local result = vim.lsp.buf_request_sync(0, "textDocument/codeAction", params, 1000)
+--     for _, res in pairs(result or {}) do
+--       for _, action in pairs(res.result or {}) do
+--         if action.edit then
+--           vim.lsp.util.apply_workspace_edit(action.edit, "utf-8")
+--         end
+--       end
+--     end
+--   end,
+-- })
+
+-- ESLint/Prettierが終わった後にorganize importsを実行
+-- vim.api.nvim_create_autocmd("BufWritePost", {
+--   pattern = { "*.ts", "*.tsx", "*.js", "*.jsx" },
+--   callback = function()
+--     vim.lsp.buf.code_action({
+--       context = { only = { "source.organizeImports" }, diagnostics = {} },
+--       apply = true,
+--     })
+--   end,
+-- })
+
+-- ESLint/Prettierが終わった後にorganize importsを実行
+-- "no code actions available"のメッセージが毎回出るので制御
+-- vim.api.nvim_create_autocmd("BufWritePost", {
+--   pattern = { "*.ts", "*.tsx", "*.js", "*.jsx" },
+--   callback = function()
+--     -- LSPのメッセージを一時的に無効化
+--     -- local original_notify = vim.notify
+--     -- vim.notify = function() end
+--     -- 
+--     -- vim.lsp.buf.code_action({
+--     --   context = { only = { "source.organizeImports" } },
+--     --   apply = true,
+--     -- })
+--     -- 
+--     -- -- 少し待ってから元に戻す
+--     -- vim.defer_fn(function()
+--     --   vim.notify = original_notify
+--     -- end, 100)
+--   end,
+-- })
 
 -- ==================== lazy.nvimの自動インストール ====================
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
@@ -171,25 +232,6 @@ require("lazy").setup({
       quickfile = { enabled = true },     -- クイックファイル表示
       statuscolumn = { enabled = true },  -- ステータスカラム
       words = { enabled = true },         -- 単語のハイライト
-      -- picker = {
-      --   -- カスタムアクション：ファイルのディレクトリをoilで開く
-      --   actions = {
-      --     open_in_oil = function(picker, item)
-      --       if item and item.file then
-      --         local dir = vim.fn.fnamemodify(item.file, ":h")
-      --         require("oil").open(dir)
-      --       end
-      --     end,
-      --   },
-      --   -- キーマップ設定
-      --   win = {
-      --     input = {
-      --       keys = {
-      --         ["<C-o>"] = { "open_in_oil", mode = { "n", "i" } }, -- Ctrl+oでoilを開く
-      --       },
-      --     },
-      --   },
-      -- },
     },
     keys = {
       { "<leader>ff", function() Snacks.picker.files() end, desc = "Find Files" },
@@ -249,6 +291,22 @@ require("lazy").setup({
           timeout_ms = 500,
           lsp_fallback = true,  -- prettierがなければLSPのフォーマッターを使う
         },
+        format_on_save = function(bufnr)
+          -- まずconform.nvimでフォーマット
+          require("conform").format({ bufnr = bufnr })
+          
+          -- その後organize imports
+          local params = vim.lsp.util.make_range_params()
+          params.context = { only = { "source.organizeImports" } }
+          local result = vim.lsp.buf_request_sync(0, "textDocument/codeAction", params, 200)
+          for _, res in pairs(result or {}) do
+            for _, action in pairs(res.result or {}) do
+              if action.edit then
+                vim.lsp.util.apply_workspace_edit(action.edit, "utf-8")
+              end
+            end
+          end
+        end,
       })
     end,
   },
@@ -311,32 +369,32 @@ require("lazy").setup({
     end,
   },
 
-  -- MasonとLSPConfigの連携
-  {
-    "williamboman/mason-lspconfig.nvim",
-    config = function()
-      require("mason-lspconfig").setup({
-        ensure_installed = { "ts_ls" },  -- TypeScript言語サーバーを自動インストール
-      })
-    end,
-  },
+  -- -- MasonとLSPConfigの連携
+  -- {
+  --   "williamboman/mason-lspconfig.nvim",
+  --   config = function()
+  --     require("mason-lspconfig").setup({
+  --       ensure_installed = { "ts_ls" },  -- TypeScript言語サーバーを自動インストール
+  --     })
+  --   end,
+  -- },
 
   -- LSP設定（nvim-lspconfig）
   {
     "neovim/nvim-lspconfig",
     config = function()
-      -- 補完機能を有効化
-      local capabilities = require("cmp_nvim_lsp").default_capabilities()
-      
-      -- TypeScript/JavaScript LSP設定
-      vim.lsp.config("ts_ls", {
-        cmd = { "typescript-language-server", "--stdio" },
-        filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
-        root_markers = { "package.json", "tsconfig.json", "jsconfig.json" },
-        capabilities = capabilities,
-      })
-      
-      vim.lsp.enable("ts_ls")
+      -- -- 補完機能を有効化
+      -- local capabilities = require("cmp_nvim_lsp").default_capabilities()
+      -- 
+      -- -- TypeScript/JavaScript LSP設定
+      -- vim.lsp.config("ts_ls", {
+      --   cmd = { "typescript-language-server", "--stdio" },
+      --   filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+      --   root_markers = { "package.json", "tsconfig.json", "jsconfig.json" },
+      --   capabilities = capabilities,
+      -- })
+      -- 
+      -- vim.lsp.enable("ts_ls")
 
       -- LSP起動時にキーマップを設定
       vim.api.nvim_create_autocmd("LspAttach", {
@@ -350,6 +408,40 @@ require("lazy").setup({
           vim.keymap.set('n', '<leader>rn', vim.lsp.buf.rename, opts)       -- リネーム
           vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, opts)  -- コードアクション
           vim.keymap.set('i', '<C-k>', vim.lsp.buf.signature_help, opts)    -- シグネチャヘルプ（引数の説明）
+        end,
+      })
+    end,
+  },
+
+  -- TypeScript開発ツール（typescript-tools.nvim）
+  {
+    "pmizio/typescript-tools.nvim",
+    dependencies = { 
+      "nvim-lua/plenary.nvim",
+    },
+    ft = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+    config = function()
+      local capabilities = require("cmp_nvim_lsp").default_capabilities()
+      
+      require("typescript-tools").setup({
+        capabilities = capabilities,
+        settings = {
+          tsserver_file_preferences = {
+            importModuleSpecifierPreference = "shortest",
+            importModuleSpecifierEnding = "minimal",
+          },
+        },
+        -- キーマップ設定
+        on_attach = function(client, bufnr)
+          local opts = { buffer = bufnr }
+          vim.keymap.set('n', 'gd', vim.lsp.buf.definition, opts)
+          vim.keymap.set('n', 'gD', vim.lsp.buf.declaration, opts)
+          vim.keymap.set('n', 'gi', vim.lsp.buf.implementation, opts)
+          vim.keymap.set('n', 'gr', vim.lsp.buf.references, opts)
+          vim.keymap.set('n', 'K', vim.lsp.buf.hover, opts)
+          vim.keymap.set('n', '<leader>rn', vim.lsp.buf.rename, opts)
+          vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, opts)
+          vim.keymap.set('i', '<C-k>', vim.lsp.buf.signature_help, opts)
         end,
       })
     end,
